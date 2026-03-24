@@ -47,8 +47,18 @@ const TOPICS = [
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_KEY });
 
 /**
+ * Strip <cite index="...">...</cite> tags that Claude's web search injects.
+ */
+function stripCitations(str = "") {
+  return String(str)
+    .replace(/<cite[^>]*>/g, "")
+    .replace(/<\/cite>/g, "")
+    .trim();
+}
+
+/**
  * Fetch news for a single topic using Claude + web_search tool.
- * Returns { summary, stories: [{ headline, source, detail, significance }] }
+ * Returns { summary, stories: [{ headline, source, url, detail, significance }] }
  */
 async function fetchTopic(topic) {
   console.log(`  → Searching: ${topic.label}`);
@@ -56,19 +66,20 @@ async function fetchTopic(topic) {
   const response = await anthropic.messages.create({
     model: "claude-sonnet-4-20250514",
     max_tokens: 1200,
-    system: `You are a concise, factual news briefing writer. Use web search to find the latest news (last 24-48 hours if possible) on the given topic. Return ONLY a valid JSON object with NO markdown fencing, NO preamble:
+    system: `You are a concise, factual news briefing writer. Use web search to find the latest news (last 24-48 hours if possible) on the given topic. Return ONLY a valid JSON object with NO markdown fencing, NO preamble, NO citation tags:
 {
   "summary": "2-3 sentence overview of the current situation",
   "stories": [
     {
       "headline": "Specific story headline",
       "source": "Publication name",
+      "url": "https://full-url-to-the-article.com",
       "detail": "1-2 sentence factual description",
       "significance": "One sentence on why this matters"
     }
   ]
 }
-Include 2-4 of the most significant stories. Be factual and neutral.`,
+Include 2-4 of the most significant stories. Be factual and neutral. Always include the full URL for each story.`,
     tools: [{ type: "web_search_20250305", name: "web_search" }],
     messages: [{ role: "user", content: `Find the very latest news about: ${topic.query}` }],
   });
@@ -80,10 +91,19 @@ Include 2-4 of the most significant stories. Be factual and neutral.`,
     .join("");
 
   try {
-    return JSON.parse(text.replace(/```json|```/g, "").trim());
+    const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+    // Strip any citation markup that leaked into text fields
+    parsed.summary = stripCitations(parsed.summary);
+    parsed.stories = (parsed.stories || []).map((s) => ({
+      ...s,
+      headline:    stripCitations(s.headline),
+      source:      stripCitations(s.source),
+      detail:      stripCitations(s.detail),
+      significance: stripCitations(s.significance),
+    }));
+    return parsed;
   } catch {
-    // Graceful fallback if JSON parse fails
-    return { summary: text.slice(0, 400), stories: [] };
+    return { summary: stripCitations(text.slice(0, 400)), stories: [] };
   }
 }
 
@@ -101,10 +121,15 @@ function buildHtml(results) {
   const sections = results.map(({ topic, data }) => {
     const stories = (data.stories || []).map((s) => `
       <div style="margin-bottom:18px;padding-bottom:18px;border-bottom:1px solid #ede8df;">
-        <div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:3px;">${esc(s.headline)}</div>
-        <div style="font-size:10px;color:#999;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">${esc(s.source)}</div>
+        ${s.url
+          ? `<a href="${esc(s.url)}" style="font-size:14px;font-weight:700;color:#1a1a1a;text-decoration:none;display:block;margin-bottom:3px;">${esc(s.headline)}</a>`
+          : `<div style="font-size:14px;font-weight:700;color:#1a1a1a;margin-bottom:3px;">${esc(s.headline)}</div>`}
+        <div style="font-size:10px;color:#999;letter-spacing:1px;text-transform:uppercase;margin-bottom:6px;">
+          ${s.url ? `<a href="${esc(s.url)}" style="color:#999;text-decoration:none;">${esc(s.source)}</a>` : esc(s.source)}
+        </div>
         <div style="font-size:13px;color:#444;line-height:1.6;">${esc(s.detail)}</div>
         ${s.significance ? `<div style="font-size:12px;color:#888;font-style:italic;margin-top:4px;">→ ${esc(s.significance)}</div>` : ""}
+        ${s.url ? `<div style="margin-top:8px;"><a href="${esc(s.url)}" style="font-size:11px;color:#888;text-decoration:underline;">Read more →</a></div>` : ""}
       </div>`).join("");
 
     return `
@@ -142,6 +167,7 @@ function buildText(results) {
     for (const s of data.stories || []) {
       out += `• ${s.headline} (${s.source})\n  ${s.detail}\n`;
       if (s.significance) out += `  → ${s.significance}\n`;
+      if (s.url) out += `  ${s.url}\n`;
       out += "\n";
     }
     out += "\n";
