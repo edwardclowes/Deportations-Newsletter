@@ -1,0 +1,15 @@
+{
+  "name": "immigration-dhs-briefing",
+  "version": "1.0.0",
+  "description": "Daily Immigration & DHS news briefing via Claude + Gmail",
+  "type": "module",
+  "main": "briefing.js",
+  "scripts": {
+    "start": "node briefing.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "dotenv": "^16.4.5",
+    "nodemailer": "^6.9.13"
+  }
+}
